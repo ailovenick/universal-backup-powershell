@@ -94,8 +94,20 @@ try {
     else {
         # === ОБЫЧНОЕ КОПИРОВАНИЕ ===
         Write-Log "Начинаю копирование файлов..."
-        Copy-Item -Path $SourcePath -Destination $currentBackupFolder -Recurse -Force -ErrorAction Stop
-        Write-Log "Копирование завершено."
+        
+        if (Test-Path -Path $SourcePath -PathType Container) {
+            $target = Join-Path -Path $currentBackupFolder -ChildPath $sourceName
+            # /NJH /NJS убирают лишние заголовки, оставляя только суть и прогресс
+            robocopy $SourcePath $target /E /R:3 /W:5 /MT:8 /NP
+        } else {
+            $srcDir = Split-Path -Path $SourcePath -Parent
+            if ([string]::IsNullOrEmpty($srcDir)) { $srcDir = "." }
+            $srcFile = Split-Path -Path $SourcePath -Leaf
+            robocopy $srcDir $currentBackupFolder $srcFile /R:3 /W:5 /NP
+        }
+        
+        if ($LASTEXITCODE -ge 8) { throw "Ошибка при копировании (код $LASTEXITCODE)" }
+        Write-Log "Копирование успешно завершено."
     }
 }
 catch {
