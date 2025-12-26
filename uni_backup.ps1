@@ -15,16 +15,10 @@ $DestDir = "D:\path\to\folder\for\bak"
 
 # 3. ВКЛЮЧИТЬ АРХИВАЦИЮ?
 # $true  - создавать ZIP файл
-# $false - создавать обычную папку с копией файлов (параметр сжатия ниже будет проигнорирован)
+# $false - создавать обычную папку с копией файлов
 [bool]$EnableZip = $false
 
-# 4. УРОВЕНЬ СЖАТИЯ (Если включена архивация):
-# "Optimal"       - (Рекомендуется) Хорошее сжатие, стандартное время.
-# "Fastest"       - Быстрое создание, но архив большего размера.
-# "NoCompression" - Без сжатия (просто упаковка в файл .zip).
-$CompressionLevel = "Optimal"
-
-# 5. ЛИМИТ КОПИЙ: Сколько штук хранить
+# 4. ЛИМИТ КОПИЙ: Сколько штук хранить
 [int]$MaxCopies = 5
 
 # 6. ЛОГ-ФАЙЛ (Пусто = имя скрипта.log рядом со скриптом)
@@ -57,7 +51,7 @@ function Write-Log {
 }
 
 # --- СТАРТ ---
-Write-Log "--- Запуск ($($MyInvocation.MyCommand.Name)). Режим ZIP: $EnableZip. Уровень: $CompressionLevel ---"
+Write-Log "--- Запуск ($($MyInvocation.MyCommand.Name)). Режим ZIP: $EnableZip ---"
 $scriptHasErrors = $false
 
 # Проверки путей
@@ -77,17 +71,17 @@ $timestampStr = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 $currentBackupFolder = Join-Path -Path $DestDir -ChildPath "$($BackupFolderPrefix)$($timestampStr)"
 
 try {
-    # Создаем папку-контейнер (например backup_2023...)
+    # Создаем папку-контейнер (например backup_2077...)
     New-Item -Path $currentBackupFolder -ItemType Directory -ErrorAction Stop | Out-Null
     Write-Log "Папка копии создана: $currentBackupFolder"
 
     if ($EnableZip) {
         # === АРХИВАЦИЯ ===
         $zipPath = Join-Path -Path $currentBackupFolder -ChildPath "$($sourceName).zip"
-        Write-Log "Начинаю архивацию ($CompressionLevel)... Это может занять время."
+        Write-Log "Начинаю архивацию... Это может занять время."
         
-        # Запуск команды сжатия с выбранным уровнем
-        Compress-Archive -Path $SourcePath -DestinationPath $zipPath -CompressionLevel $CompressionLevel -ErrorAction Stop
+        # Запуск команды сжатия (Optimal по умолчанию)
+        Compress-Archive -Path $SourcePath -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
         
         Write-Log "Архив успешно создан."
     }
