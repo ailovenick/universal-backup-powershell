@@ -1,8 +1,13 @@
 <#
 .SYNOPSIS
-    Универсальный бэкап: Копирование или Архивация (ZIP).
-    Позволяет выбрать уровень сжатия (Скорость vs Размер).
-    Управляет ротацией старых копий.
+    Универсальный скрипт бэкапа: Robocopy, VSS (Shadow Copy), TAR и 7-Zip.
+.DESCRIPTION
+    Универсальный инструмент для копирования или архивации данных.
+    Поддерживает:
+    - Обход заблокированных файлов (Hyper-V, базы данных) через VSS.
+    - Многопоточное копирование через Robocopy.
+    - Архивацию через TAR или 7-Zip powershell ZIP
+    - Автоматическую ротацию старых копий.
 #>
 
 # --- НАСТРОЙКИ СКРИПТА ---
@@ -13,14 +18,22 @@ $SourcePath = "D:\path\to\source\file\or\folder"
 # 2. КУДА СОХРАНЯТЬ: Общая папка для бэкапов
 $DestDir = "D:\path\to\folder\for\bak"
 
-# 3. ВКЛЮЧИТЬ АРХИВАЦИЮ?
-# $true  - создавать ZIP файл
-# $false - создавать обычную папку с копией файлов
-[bool]$EnableZip = $false
+# 3. МЕТОД БЭКАПА:
+# 0 - БЕЗ СЖАТИЯ. Обычное копирование папок (быстро, через Robocopy).
+# 1 - TAR. Встроен в Win 10/11. Нет лимита 2ГБ. Рекомендуется как стандарт. (Формат .zip)
+# 2 - 7-ZIP. Максимальное сжатие. Требует установленный 7-Zip (C:\Program Files\7-Zip\7z.exe). (Формат .7z)
+# 3 - СТАНДАРТ. Встроенный Zip PowerShell. 
+#     ВАЖНО: В PowerShell 5.1 есть ЛИМИТ 2ГБ. В PowerShell 7+ лимит снят. (Формат .zip)
+$BackupMethod = 0
+
+# Путь к 7-Zip (нужен только для метода 2)
+$Path7z = "C:\Program Files\7-Zip\7z.exe"
 
 # 4. ИСПОЛЬЗОВАТЬ VSS (Shadow Copy)?
-# Позволяет копировать файлы, занятые другими программами.
-# ТРЕБУЕТ ЗАПУСКА ОТ ИМЕНИ АДМИНИСТРАТОРА.
+# $true  - Позволяет копировать файлы, занятые другими программами (Hyper-V, SQL, Outlook).
+#         Решает ошибку "Процесс не может получить доступ к файлу... занят другим процессом".
+# $false - Обычное копирование. Может давать ошибки на запущенных виртуальных машинах.
+# ВНИМАНИЕ: Требует запуска PowerShell ОТ ИМЕНИ АДМИНИСТРАТОРА.
 [bool]$EnableVSS = $false
 
 # 5. ЛИМИТ КОПИЙ: Сколько штук хранить
@@ -56,7 +69,7 @@ function Write-Log {
 }
 
 # --- СТАРТ ---
-Write-Log "--- Запуск ($($MyInvocation.MyCommand.Name)). ZIP: $EnableZip, VSS: $EnableVSS ---"
+Write-Log "--- Запуск ($($MyInvocation.MyCommand.Name)). Метод: $BackupMethod, VSS: $EnableVSS ---"
 $scriptHasErrors = $false
 
 # Проверка прав администратора для VSS
@@ -114,31 +127,59 @@ try {
         # Формируем путь внутри теневой копии
         $relativePath = (Resolve-Path $SourcePath).Path.Replace($sourceDrive, "").TrimStart("\")
         $finalSourcePath = Join-Path -Path $vssLinkPath -ChildPath $relativePath
-        Write-Log "Теневая копия подключена: $vssLinkPath. Начинаю копирование..."
+        Write-Log "Теневая копия подключена: $vssLinkPath. Начинаю работу..."
     }
 
-    if ($EnableZip) {
-        # === АРХИВАЦИЯ ===
-        $zipPath = Join-Path -Path $currentBackupFolder -ChildPath "$($sourceName).zip"
-        Write-Log "Начинаю архивацию... Это может занять время."
-        Compress-Archive -Path $finalSourcePath -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
-        Write-Log "Архив успешно создан."
-    }
-    else {
-        # === ОБЫЧНОЕ КОПИРОВАНИЕ ===
-        Write-Log "Начинаю копирование файлов..."
-        
-        if (Test-Path -Path $finalSourcePath -PathType Container) {
-            $target = Join-Path -Path $currentBackupFolder -ChildPath $sourceName
-            robocopy $finalSourcePath $target /E /R:3 /W:5 /MT:8 /NP
-        } else {
-            $srcDir = Split-Path -Path $finalSourcePath -Parent
-            $srcFile = Split-Path -Path $finalSourcePath -Leaf
-            robocopy $srcDir $currentBackupFolder $srcFile /R:3 /W:5 /NP
+    # --- ВЫБОР МЕТОДА БЭКАПА ---
+    switch ($BackupMethod) {
+        0 {
+            # === ОБЫЧНОЕ КОПИРОВАНИЕ (Robocopy) ===
+            Write-Log "Начинаю копирование файлов..."
+            if (Test-Path -Path $finalSourcePath -PathType Container) {
+                $target = Join-Path -Path $currentBackupFolder -ChildPath $sourceName
+                robocopy $finalSourcePath $target /E /R:3 /W:5 /MT:8 /NP
+            } else {
+                $srcDir = Split-Path -Path $finalSourcePath -Parent
+                $srcFile = Split-Path -Path $finalSourcePath -Leaf
+                robocopy $srcDir $currentBackupFolder $srcFile /R:3 /W:5 /NP
+            }
+            if ($LASTEXITCODE -ge 8) { throw "Ошибка Robocopy (код $LASTEXITCODE)" }
+            Write-Log "Копирование успешно завершено."
         }
-        
-        if ($LASTEXITCODE -ge 8) { throw "Ошибка при копировании (код $LASTEXITCODE)" }
-        Write-Log "Копирование успешно завершено."
+
+        1 {
+            # === АРХИВАЦИЯ TAR ===
+            $zipPath = Join-Path -Path $currentBackupFolder -ChildPath "$($sourceName).zip"
+            Write-Log "Начинаю архивацию через TAR (без лимита 2ГБ)..."
+            $parentDir = Split-Path -Path $finalSourcePath -Parent
+            $leafName = Split-Path -Path $finalSourcePath -Leaf
+            Push-Location $parentDir
+            tar.exe -a -c -f $zipPath $leafName
+            $exitCode = $LASTEXITCODE
+            Pop-Location
+            if ($exitCode -ne 0) { throw "Ошибка TAR (код $exitCode)" }
+            Write-Log "Архив ZIP успешно создан."
+        }
+
+        2 {
+            # === АРХИВАЦИЯ 7-ZIP ===
+            if (-not (Test-Path $Path7z)) { throw "7-Zip не найден по пути $Path7z" }
+            $zipPath = Join-Path -Path $currentBackupFolder -ChildPath "$($sourceName).7z"
+            Write-Log "Начинаю архивацию через 7-Zip..."
+            & $Path7z a -t7z "$zipPath" "$finalSourcePath" -mx5 -mmt8 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Ошибка 7-Zip (код $LASTEXITCODE)" }
+            Write-Log "Архив 7z успешно создан."
+        }
+
+        3 {
+            # === АРХИВАЦИЯ СТАНДАРТ (Internal) ===
+            $zipPath = Join-Path -Path $currentBackupFolder -ChildPath "$($sourceName).zip"
+            Write-Log "Начинаю стандартную архивацию (лимит 2ГБ)..."
+            Compress-Archive -Path $finalSourcePath -DestinationPath $zipPath -CompressionLevel Optimal -ErrorAction Stop
+            Write-Log "Архив успешно создан."
+        }
+
+        default { throw "Некорректный метод бэкапа: $BackupMethod" }
     }
 }
 catch {
